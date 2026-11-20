@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { blankMachine, bounds, createProgram, fitsBuildArea, leftEdge, levels, parts, pistonAngle, placePart, removePart, starterMachine, terrainY } from './model.js'
+import { decodeMachineFile, encodeMachineFile, maxMachineFileBytes } from './machine-file.js'
+import { blankMachine, bounds, completionPort, copyProgramNodes, createProgram, fitsBuildArea, leftEdge, levels, parts, pasteProgramNodes, pistonAngle, placePart, removePart, starterMachine, terrainY } from './model.js'
 import { createSimulation, initializePhysics, STEP } from './physics.js'
 
 test('construction keeps full parts inside the bounds and clears removed actuator targets', () => {
@@ -8,6 +9,7 @@ test('construction keeps full parts inside the bounds and clears removed actuato
   const machine = blankMachine()
   assert.equal(placePart(machine, 'wheel', 0, 0, null), undefined)
   const base = placePart(machine, 'beam', 50, -50, null)
+  assert.equal(placePart(machine, 'treadWheel', 0, 0, base.id), undefined)
   assert.equal(base.x + 1.5, bounds.width / 2)
   assert.equal(base.y - 0.275, -bounds.height / 2)
   assert.ok(fitsBuildArea(base))
@@ -18,6 +20,25 @@ test('construction keeps full parts inside the bounds and clears removed actuato
   removePart(machine, hinge.id)
   assert.deepEqual(machine.parts.map(part => part.id), [base.id])
   assert.equal(machine.nodes.at(-1).target, '')
+})
+
+test('quarter-turns affect the footprint and the collision shape of a primitive', async () => {
+  await initializePhysics()
+  const machine = blankMachine()
+  const beam = placePart(machine, 'beam', 0, 50, null, 1)
+  assert.equal(beam.y, (bounds.height - parts.beam.width) / 2)
+  assert.ok(fitsBuildArea(beam))
+  assert.equal(fitsBuildArea({ ...beam, y: beam.y + 0.1 }), false)
+
+  const simulation = createSimulation(machine, levels[0])
+  try {
+    while (simulation.elapsed < 0.6) simulation.step()
+    const [vertical] = simulation.poses()
+    assert.ok(Math.abs(vertical.angle - Math.PI / 2) < 0.025)
+    assert.ok(Math.abs(vertical.y - parts.beam.width / 2) < 0.025)
+  } finally {
+    simulation.dispose()
+  }
 })
 
 test('the starter graph waits before commanding both wheels', () => {
@@ -41,6 +62,199 @@ test('a delayed cycle repeats and a cycle without a delay yields control', () =>
   assert.deepEqual(commands, ['rear', 'front', 'rear', 'front'])
   machine.nodes[1].value = 0
   assert.equal(createProgram(machine, () => {}).step(0).stalled, true)
+})
+
+test('counted loops repeat a nested body and use the completion output', () => {
+  const machine = starterMachine()
+  machine.nodes = [
+    { id: 'start', type: 'start' },
+    { id: 'outer', type: 'for', value: 2 },
+    { id: 'inner', type: 'for', value: 3 },
+    { id: 'drive', type: 'speed', value: 8, target: 'rear' },
+    { id: 'after-inner', type: 'speed', value: 4, target: 'rear' },
+    { id: 'after-outer', type: 'speed', value: 0, target: 'rear' }
+  ]
+  machine.links = { start: 'outer', outer: 'inner', inner: 'drive',
+    'drive': 'inner', [completionPort('inner')]: 'after-inner', [completionPort('outer')]: 'after-outer' }
+  const speeds = []
+  const program = createProgram(machine, (_, mode, value) => speeds.push(value))
+  assert.deepEqual(program.step(0), { active: undefined, stalled: false })
+  assert.deepEqual(speeds, [8, 8, 8, 4, 8, 8, 8, 4, 0])
+
+  machine.nodes[1].value = 0
+  speeds.length = 0
+  createProgram(machine, (_, mode, value) => speeds.push(value)).step(0)
+  assert.deepEqual(speeds, [0])
+})
+
+test('while checks elapsed time between iterations and finishes a body that is waiting', () => {
+  const machine = starterMachine()
+  machine.nodes = [
+    { id: 'start', type: 'start' },
+    { id: 'loop', type: 'while', value: 0.5 },
+    { id: 'drive', type: 'speed', value: 8, target: 'rear' },
+    { id: 'wait', type: 'delay', value: 0.3 },
+    { id: 'stop', type: 'speed', value: 0, target: 'rear' }
+  ]
+  machine.links = { start: 'loop', loop: 'drive', drive: 'wait', [completionPort('loop')]: 'stop' }
+  const speeds = []
+  const program = createProgram(machine, (_, mode, value) => speeds.push(value))
+  for (const time of [0, 0.25, 0.3, 0.5, 0.59]) assert.equal(program.step(time).stalled, false)
+  assert.deepEqual(speeds, [8, 8])
+  assert.deepEqual(program.step(0.6), { active: undefined, stalled: false })
+  assert.deepEqual(speeds, [8, 8, 0])
+
+  delete machine.links.drive
+  speeds.length = 0
+  const immediate = createProgram(machine, (_, mode, value) => speeds.push(value))
+  assert.equal(immediate.step(0).active, 'loop')
+  assert.equal(immediate.step(0.25).active, 'loop')
+  assert.equal(immediate.step(0.5).active, undefined)
+  assert.deepEqual(speeds, [8, 8, 0])
+})
+
+test('copying program nodes preserves internal loop wires and leaves original nodes intact', () => {
+  const machine = starterMachine()
+  machine.nodes.push({ id: 'loop', type: 'for', value: 3, x: 235, y: 255 })
+  machine.links.start = 'loop'
+  machine.links.loop = 'delay'
+  machine.links[completionPort('loop')] = 'drive'
+  const copy = copyProgramNodes(machine, new Set(['start', 'loop', 'delay', 'drive']))
+  const [delay, drive, loop] = pasteProgramNodes(machine, copy, 60, 70)
+
+  assert.equal(machine.nodes.filter(node => node.type === 'start').length, 1)
+  assert.equal(machine.links.start, 'loop')
+  assert.equal(machine.links[loop], delay)
+  assert.equal(machine.links[completionPort(loop)], drive)
+  assert.equal(machine.links[delay], drive)
+  assert.notEqual(loop, 'loop')
+  assert.deepEqual(machine.nodes.slice(-3).map(({ x, y, value }) => [x, y, value]),
+    [[60, 70, 0.3], [260, 70, 8], [60, 270, 3]])
+  const partial = copyProgramNodes(machine, new Set(['loop', 'drive']))
+  assert.deepEqual(partial.links, [[completionPort('loop'), 'drive']])
+})
+
+test('all four wheel speed commands keep driving after the chassis reaches the step', async () => {
+  await initializePhysics()
+  const machine = starterMachine()
+  machine.parts = [machine.parts[0], ...Array.from({ length: 4 }, (_, index) => ({
+    id: 'wheel-' + index, type: 'wheel', parent: 'chassis', x: index * 1.5 - 2.25, y: 0
+  }))]
+  machine.nodes = [{ id: 'start', type: 'start' }, ...machine.parts.slice(1).map((wheel, index) => ({
+    id: 'drive-' + index, type: 'speed', value: 8, target: wheel.id
+  }))]
+  machine.links = Object.fromEntries(machine.nodes.slice(1).map((node, index) => [machine.nodes[index].id, node.id]))
+  const simulation = createSimulation(machine, levels[1])
+  try {
+    while (simulation.elapsed < 4.8) simulation.step()
+    const before = simulation.poses()
+    while (simulation.elapsed < 5) simulation.step()
+    const after = simulation.poses()
+    for (let index = 1; index < after.length; index++) {
+      const angle = after[index].angle - before[index].angle - (after[0].angle - before[0].angle)
+      assert.ok(Math.atan2(Math.sin(angle), Math.cos(angle)) < -0.35, after[index].id + ' stalled')
+    }
+  } finally {
+    simulation.dispose()
+  }
+})
+
+test('piston-mounted driven wheels recover under load on the step', async () => {
+  await initializePhysics()
+  const machine = blankMachine()
+  machine.parts = [
+    { id: 'front-beam', type: 'beam', parent: null, x: 1.5, y: 0.75 },
+    { id: 'rear-beam', type: 'beam', parent: 'front-beam', x: -1.5, y: 0.75 },
+    { id: 'front-wheel', type: 'wheel', parent: 'front-beam', x: 3.25, y: -1.75 },
+    { id: 'rear-wheel', type: 'wheel', parent: 'rear-beam', x: -2.75, y: -1.75 },
+    { id: 'front-piston', type: 'piston', parent: 'front-beam', x: 1.5, y: -0.75 },
+    { id: 'front-piston-wheel', type: 'wheel', parent: 'front-piston', x: 1.5, y: -1.75 },
+    { id: 'rear-piston', type: 'piston', parent: 'rear-beam', x: -3.5, y: -1 },
+    { id: 'rear-piston-wheel', type: 'wheel', parent: 'rear-piston', x: -4.14, y: -1.75 }
+  ]
+  machine.nodes.push(
+    { id: 'drive', type: 'speed', value: 10, target: '*' },
+    { id: 'wait-1', type: 'delay', value: 2 },
+    { id: 'extend-front', type: 'speed', value: 5, target: 'front-piston' },
+    { id: 'wait-2', type: 'delay', value: 4 },
+    { id: 'retract-front', type: 'speed', value: -20, target: 'front-piston' },
+    { id: 'wait-3', type: 'delay', value: 1 },
+    { id: 'extend-rear', type: 'speed', value: 10, target: 'rear-piston' },
+    { id: 'wait-4', type: 'delay', value: 1 },
+    { id: 'retract-rear', type: 'speed', value: -20, target: 'rear-piston' }
+  )
+  machine.links = Object.fromEntries(machine.nodes.slice(1).map((node, index) => [machine.nodes[index].id, node.id]))
+
+  const level = levels.find(level => level.id === 'step')
+  const simulation = createSimulation(machine, level)
+  const turns = new Map(machine.parts.filter(part => part.type === 'wheel').map(part => [part.id, 0]))
+  try {
+    while (simulation.elapsed < 4 && simulation.status === 'running') simulation.step()
+    let before = new Map(simulation.poses().map(part => [part.id, part]))
+    while (simulation.elapsed < 6 && simulation.status === 'running') {
+      simulation.step()
+      const after = new Map(simulation.poses().map(part => [part.id, part]))
+      for (const [id, cumulative] of turns) {
+        const part = after.get(id)
+        const angle = (part.angle - after.get(part.parent).angle) -
+          (before.get(id).angle - before.get(part.parent).angle)
+        turns.set(id, cumulative + Math.atan2(Math.sin(angle), Math.cos(angle)))
+      }
+      before = after
+    }
+    for (const [id, angle] of turns) assert.ok(angle < -9, id + ' stopped turning under load')
+    while (simulation.elapsed < 20 && simulation.status === 'running') simulation.step()
+    assert.equal(simulation.status, 'won')
+  } finally {
+    simulation.dispose()
+  }
+})
+
+test('a shared machine preserves its geometry, actuator settings, and program when replayed', async () => {
+  await initializePhysics()
+  const machine = starterMachine()
+  machine.name = 'Bana 2 – prov'
+  machine.parts[0].turns = 1
+  machine.parts[1].maxForce = 320
+  machine.nodes.push({ id: 'loop', type: 'for', value: 2, x: 625, y: 55 })
+  machine.links = { start: 'loop', loop: 'delay', delay: 'loop', [completionPort('loop')]: 'drive' }
+
+  const exported = encodeMachineFile({ ...machine, unrelated: 'browser-only settings' })
+  const imported = decodeMachineFile(exported)
+  assert.deepEqual(imported, machine)
+
+  const original = createSimulation(machine, levels[0])
+  const roundTrip = createSimulation(imported, levels[0])
+  try {
+    for (let step = 0; step < 240; step++) {
+      original.step()
+      roundTrip.step()
+    }
+    assert.deepEqual(roundTrip.poses(), original.poses())
+  } finally {
+    original.dispose()
+    roundTrip.dispose()
+  }
+})
+
+test('invalid machine files are rejected before import', () => {
+  const good = encodeMachineFile(starterMachine())
+  assert.throws(() => decodeMachineFile('{broken'), { code: 'machineFileInvalid' })
+  assert.throws(() => decodeMachineFile(good.replace('"version": 1', '"version": 2')), { code: 'machineFileVersion' })
+  assert.throws(() => decodeMachineFile(' '.repeat(maxMachineFileBytes + 1)), { code: 'machineFileTooLarge' })
+  const invalidMachines = [
+    data => { data.parts[1].parent = data.parts[1].id },
+    data => { data.parts[0].id = 'constructor' },
+    data => { data.nodes[0].id = '"><script>' },
+    data => { data.nodes[2].target = 'missing-part' },
+    data => { data.links.delay = 'missing-node' },
+    data => { data.links['delay:done'] = 'drive' }
+  ]
+  for (const mutate of invalidMachines) {
+    const document = JSON.parse(good)
+    mutate(document.machine)
+    assert.throws(() => decodeMachineFile(JSON.stringify(document)), { code: 'machineFileInvalid' })
+  }
 })
 
 test('the flat course requires the entire rover to cross the finish line', async () => {
@@ -72,7 +286,7 @@ const obstacleDesigns = [
   },
   {
     id: 'pit', chassisY: 2, rearX: -2, frontX: 1.5, arm: [2, -0.25], wheel: [2.5, 1.5],
-    speed: 23, commands: [['delay', 1.65], ['position', -167], ['delay', 0.5], ['position', 0]]
+    speed: 23, commands: [['delay', 1.63], ['position', -154], ['delay', 0.5], ['position', 0]]
   }
 ]
 
@@ -115,12 +329,26 @@ for (const design of obstacleDesigns) {
   })
 }
 
-test('an off-road rover can finish all three new courses', async () => {
+test('the newer courses can be finished using parts in the current parts bin', async () => {
   await initializePhysics()
   for (const level of levels.slice(3)) {
     const machine = starterMachine()
-    for (const part of machine.parts) {
-      if (part.type === 'wheel') part.type = 'treadWheel'
+    if (level.id === 'terraces') {
+      machine.parts.pop()
+      const [chassis, rear, front] = machine.parts
+      chassis.y = 0.75
+      rear.x = -2.25
+      front.x = 1.25
+      machine.nodes.at(-1).value = 15
+      const servo = placePart(machine, 'servo', 1.5, 1, chassis.id)
+      placePart(machine, 'blob', 2.75, 1.75, servo.id)
+      let previous = 'drive'
+      for (const [type, value] of [['delay', 3.44], ['position', -60], ['delay', 0.76], ['position', 0]]) {
+        const id = 'terraces-' + machine.nodes.length
+        machine.nodes.push({ id, type, value, target: servo.id })
+        machine.links[previous] = id
+        previous = id
+      }
     }
     const simulation = createSimulation(machine, level)
     try {
@@ -129,6 +357,48 @@ test('an off-road rover can finish all three new courses', async () => {
     } finally {
       simulation.dispose()
     }
+  }
+})
+
+test('the blob resists slipping and releases when lifted from the ground', async () => {
+  await initializePhysics()
+  const slope = { finish: 35, points: [[-12, 14.4], [20, -24], [40, -24]] }
+  function slip(type) {
+    const machine = blankMachine()
+    const frame = placePart(machine, 'beam', 0, 1, null)
+    placePart(machine, type, -1, 0, frame.id)
+    placePart(machine, type, 1, 0, frame.id)
+    const simulation = createSimulation(machine, slope)
+    try {
+      const start = simulation.poses()[0].x
+      while (simulation.elapsed < 1.5 && simulation.status === 'running') simulation.step()
+      return simulation.poses()[0].x - start
+    } finally {
+      simulation.dispose()
+    }
+  }
+  assert.ok(slip('blob') + 0.5 < slip('ball'))
+
+  const machine = blankMachine()
+  const frame = placePart(machine, 'beam', 0, 1.5, null)
+  placePart(machine, 'strut', -1, 0.5, frame.id)
+  placePart(machine, 'strut', 1, 0.5, frame.id)
+  const ram = placePart(machine, 'ram', 0, 0.25, frame.id)
+  const blob = placePart(machine, 'blob', 0, -0.25, ram.id)
+  machine.nodes.push(
+    { id: 'settle', type: 'delay', value: 1 },
+    { id: 'lift', type: 'position', value: -0.35, target: ram.id }
+  )
+  machine.links = { [machine.nodes[0].id]: 'settle', settle: 'lift' }
+  const simulation = createSimulation(machine, levels[0])
+  try {
+    const clearance = () => simulation.poses().find(part => part.id === blob.id).y - parts.blob.height / 2
+    while (simulation.elapsed < 0.9) simulation.step()
+    assert.ok(Math.abs(clearance()) < 0.02)
+    while (simulation.elapsed < 2) simulation.step()
+    assert.ok(clearance() > 0.2)
+  } finally {
+    simulation.dispose()
   }
 })
 

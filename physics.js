@@ -1,4 +1,4 @@
-import { capsuleExtents, capsuleSize, clamp, createProgram, isRotaryMount, leftEdge, localVertices, motorForce, parts, pistonAngle, terrainY } from './model.js'
+import { buildAngle, buildSize, capsuleExtents, capsuleSize, clamp, createProgram, isRotaryMount, leftEdge, localVertices, motorForce, parts, pistonAngle, terrainY } from './model.js'
 
 let RAPIER
 let initialization
@@ -18,6 +18,9 @@ const machineGroups = (1 << 16) | 2
 const groundGroups = (2 << 16) | 1
 const positionStiffness = 1800
 const positionDamping = 85
+const wheelSpeedDamping = 5
+const wheelRecoveryDamping = 60
+const wheelStallTicks = Math.round(0.15 / STEP)
 const hingeSpeedDamping = 90
 const pistonSpeedDamping = 100
 
@@ -33,13 +36,13 @@ export function createSimulation(machine, level) {
   const bodies = new Map()
   const joints = new Map()
   const initialParts = new Map(machine.parts.map(part => [part.id, part]))
-  const pistonAngles = new Map(machine.parts.filter(part => parts[part.type].shape === 'capsule')
-    .map(part => [part.id, pistonAngle(part, initialParts.get(part.parent))]))
-  const left = Math.min(...machine.parts.map(part => leftEdge(part, part.x, pistonAngles.get(part.id) ?? 0)))
+  const colliderAngles = new Map(machine.parts.map(part => [part.id, parts[part.type].shape === 'capsule'
+    ? pistonAngle(part, initialParts.get(part.parent)) : buildAngle(part)]))
+  const left = Math.min(...machine.parts.map(part => leftEdge(part, part.x, colliderAngles.get(part.id))))
   const offset = 2 - left
   const lift = Math.max(...machine.parts.map(part => {
-    const { width, height } = parts[part.type]
-    const half = pistonAngles.has(part.id) ? capsuleExtents(part, pistonAngles.get(part.id))
+    const { width, height } = buildSize(part.type, part.turns)
+    const half = parts[part.type].shape === 'capsule' ? capsuleExtents(part, colliderAngles.get(part.id))
       : { x: width / 2, y: height / 2 }
     const x = offset + part.x
     const leftEdge = x - half.x
@@ -56,8 +59,7 @@ export function createSimulation(machine, level) {
     let collider
     if (shape.shape === 'capsule') {
       const { halfLength, radius } = capsuleSize(part)
-      // Rotate the collider while keeping the body frame aligned with the prismatic joint.
-      collider = RAPIER.ColliderDesc.capsule(halfLength, radius).setRotation(pistonAngles.get(part.id) - Math.PI / 2)
+      collider = RAPIER.ColliderDesc.capsule(halfLength, radius)
     } else if (shape.shape === 'circle') {
       collider = RAPIER.ColliderDesc.ball(shape.width / 2)
     } else if (shape.shape === 'triangle') {
@@ -65,6 +67,11 @@ export function createSimulation(machine, level) {
     } else {
       collider = RAPIER.ColliderDesc.cuboid(shape.width / 2, shape.height / 2)
     }
+    // Rotate the shape in its body frame so attachment offsets and joint axes stay fixed.
+    const angle = colliderAngles.get(part.id) - (shape.shape === 'capsule' ? Math.PI / 2 : 0)
+    if (angle) collider.setRotation(angle)
+    // The blob grips along contact tangents. It uses the usual non-adhesive contact normal.
+    if (shape.grip) collider.setFrictionCombineRule(RAPIER.CoefficientCombineRule.Max)
     world.createCollider(collider.setFriction(shape.friction ?? (shape.drive ? 1.6 : 0.55))
       .setDensity(shape.drive ? 1.2 : 0.85).setCollisionGroups(machineGroups), body)
     bodies.set(part.id, body)
@@ -109,6 +116,16 @@ export function createSimulation(machine, level) {
     if (part.parent) attachedMass.set(part.parent, (attachedMass.get(part.parent) ?? 0) + balancedMass + load)
   }
 
+  const wheelSpeeds = new Map()
+  function clearWheelSpeed(id) {
+    const drive = wheelSpeeds.get(id)
+    if (!drive) return
+    wheelSpeeds.delete(id)
+    if (drive.stallTicks === wheelStallTicks) {
+      drive.joint.configureMotorModel(RAPIER.MotorModel.AccelerationBased)
+    }
+  }
+
   const program = createProgram(machine, (part, mode, value) => {
     const joint = joints.get(part.id)
     const shape = parts[part.type]
@@ -122,10 +139,19 @@ export function createSimulation(machine, level) {
         joint.configureMotorPosition(angle, positionStiffness, positionDamping)
         return
       }
+      if (shape.drive) {
+        if (wheelSpeeds.get(part.id)?.speed === speed) return
+        clearWheelSpeed(part.id)
+        if (speed && motorForce(part) > 0) {
+          wheelSpeeds.set(part.id, { speed, joint, wheel: bodies.get(part.id), mount: bodies.get(part.parent),
+            moving: false, stallTicks: 0 })
+        }
+      }
       // Replacing a position command must release its spring.
-      const damping = linear ? pistonSpeedDamping : shape.drive ? 5 : hingeSpeedDamping
+      const damping = linear ? pistonSpeedDamping : shape.drive ? wheelSpeedDamping : hingeSpeedDamping
       joint.configureMotor(0, speed, 0, damping)
     } else {
+      clearWheelSpeed(part.id)
       const position = linear ? value : -value * Math.PI / 180
       const [min, max] = shape.limits ?? [-2 * Math.PI, 2 * Math.PI]
       // A stiffer, damped position motor holds an offset joint against gravity.
@@ -138,7 +164,7 @@ export function createSimulation(machine, level) {
   let stalled = false
   const poses = () => machine.parts.map(part => {
     const body = bodies.get(part.id)
-    return { ...part, ...body.translation(), angle: body.rotation() + (pistonAngles.get(part.id) ?? 0) }
+    return { ...part, ...body.translation(), angle: body.rotation() + colliderAngles.get(part.id) }
   })
   return {
     get elapsed() { return elapsed },
@@ -148,6 +174,18 @@ export function createSimulation(machine, level) {
     step() {
       if (status !== 'running') return
       stalled = program.step(elapsed).stalled
+      for (const drive of wheelSpeeds.values()) {
+        if (drive.stallTicks === wheelStallTicks) continue
+        // Recover a wheel that was turning and has since stalled under load.
+        const fraction = (drive.wheel.angvel() - drive.mount.angvel()) / drive.speed
+        drive.moving ||= fraction >= 0.5
+        drive.stallTicks = drive.moving && fraction < 0.16 ? drive.stallTicks + 1 : 0
+        if (drive.stallTicks === wheelStallTicks) {
+          // Use torque-based feedback so a light mount doesn't limit stall recovery.
+          drive.joint.configureMotorModel(RAPIER.MotorModel.ForceBased)
+          drive.joint.configureMotor(0, drive.speed, 0, wheelRecoveryDamping)
+        }
+      }
       world.step()
       elapsed += STEP
       const current = poses()
