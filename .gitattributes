@@ -1,0 +1,25 @@
+# Use LFS for binary and unclassified files. Declare editable text formats below.
+* filter=lfs diff=lfs merge=lfs -text
+[attr]source-text !filter !diff !merge text eol=lf
+
+.gitattributes source-text
+.gitignore source-text
+.gitmodules source-text
+.editorconfig source-text
+LICENSE source-text
+*.md source-text
+*.txt source-text
+*.js source-text
+*.mjs source-text
+*.cjs source-text
+*.json source-text
+*.html source-text
+*.css source-text
+*.svg source-text
+*.cs source-text
+*.yml source-text
+*.yaml source-text
+*.cmd source-text eol=crlf
+
+# Rapier's generated JavaScript bundle carries its embedded WebAssembly binary.
+dist/assets/rapier-*.js filter=lfs diff=lfs merge=lfs -text

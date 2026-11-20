@@ -1,0 +1,113 @@
+import { clamp, createProgram, leftEdge, localVertices, parts, terrainY } from './model.js'
+
+let RAPIER
+let initialization
+export function initializePhysics() {
+  initialization ??= import('@dimforge/rapier2d-compat').then(async ({ default: engine }) => {
+    await engine.init()
+    RAPIER = engine
+  }).catch(error => {
+    initialization = undefined
+    throw error
+  })
+  return initialization
+}
+
+export const STEP = 1 / 120
+const machineGroups = (1 << 16) | 2
+const groundGroups = (2 << 16) | 1
+
+export function createSimulation(machine, level) {
+  const world = new RAPIER.World({ x: 0, y: -10 })
+  world.timestep = STEP
+  world.integrationParameters.numSolverIterations = 10
+  const ground = world.createRigidBody(RAPIER.RigidBodyDesc.fixed())
+  const coordinates = new Float32Array(level.points.flat())
+  const indices = new Uint32Array(level.points.slice(1).flatMap((_, index) => [index, index + 1]))
+  world.createCollider(RAPIER.ColliderDesc.polyline(coordinates, indices).setFriction(1.25).setCollisionGroups(groundGroups), ground)
+
+  const bodies = new Map()
+  const joints = new Map()
+  const left = Math.min(...machine.parts.map(part => leftEdge(part, part.x, 0)))
+  const offset = 2 - left
+  const lift = Math.max(...machine.parts.map(part => {
+    const { width, height } = parts[part.type]
+    const x = offset + part.x
+    const leftEdge = x - width / 2
+    const rightEdge = x + width / 2
+    const surface = Math.max(terrainY(level, leftEdge), terrainY(level, rightEdge),
+      ...level.points.filter(([x]) => x > leftEdge && x < rightEdge).map(([, y]) => y))
+    return surface - part.y + height / 2
+  }))
+  for (const part of machine.parts) {
+    const shape = parts[part.type]
+    const body = world.createRigidBody(RAPIER.RigidBodyDesc.dynamic()
+      .setTranslation(offset + part.x, lift + 0.22 + part.y)
+      .setCanSleep(false).setCcdEnabled(true).setAngularDamping(0.1))
+    const collider = shape.shape === 'circle' ? RAPIER.ColliderDesc.ball(shape.width / 2)
+      : shape.shape === 'triangle' ? RAPIER.ColliderDesc.convexHull(new Float32Array(localVertices(part).flat()))
+      : RAPIER.ColliderDesc.cuboid(shape.width / 2, shape.height / 2)
+    world.createCollider(collider.setFriction(part.type === 'wheel' ? 1.6 : 0.55)
+      .setDensity(part.type === 'wheel' ? 1.2 : 0.85).setCollisionGroups(machineGroups), body)
+    bodies.set(part.id, body)
+
+    if (!part.parent) continue
+    const parent = bodies.get(part.parent)
+    const origin = parent.translation()
+    const position = body.translation()
+    const anchor = { x: position.x - origin.x, y: position.y - origin.y }
+    const center = { x: 0, y: 0 }
+    let joint
+    if (shape.joint === 'revolute') {
+      const pivot = part.type === 'hinge' ? { x: anchor.x / 2, y: anchor.y / 2 } : anchor
+      joint = RAPIER.JointData.revolute(pivot, { x: pivot.x - anchor.x, y: pivot.y - anchor.y })
+    } else if (shape.joint === 'prismatic') {
+      const distance = Math.hypot(anchor.x, anchor.y)
+      const axis = distance > 0.001 ? { x: anchor.x / distance, y: anchor.y / distance } : { x: 1, y: 0 }
+      joint = RAPIER.JointData.prismatic(anchor, center, axis)
+    } else {
+      joint = RAPIER.JointData.fixed(anchor, 0, center, 0)
+    }
+    const handle = world.createImpulseJoint(joint, parent, body, true)
+    if (shape.joint === 'prismatic') handle.setLimits(-0.45, 1.5)
+    if (shape.joint) joints.set(part.id, handle)
+  }
+
+  const program = createProgram(machine, (part, mode, value) => {
+    const joint = joints.get(part.id)
+    if (mode === 'speed') {
+      const speed = part.type === 'piston' ? clamp(value, -8, 8) : -clamp(value, -30, 30)
+      // Replacing a position command must release its spring.
+      joint.configureMotor(0, speed, 0, 5)
+    } else {
+      const position = part.type === 'piston' ? clamp(value, -0.45, 1.5)
+        : -clamp(value, -360, 360) * Math.PI / 180
+      // A stiffer, damped position motor holds an offset joint against gravity.
+      joint.configureMotor(position, 0, 1800, 85)
+    }
+  })
+
+  let elapsed = 0
+  let status = 'running'
+  let stalled = false
+  const poses = () => machine.parts.map(part => {
+    const body = bodies.get(part.id)
+    return { ...part, ...body.translation(), angle: body.rotation() }
+  })
+  return {
+    get elapsed() { return elapsed },
+    get status() { return status },
+    get stalled() { return stalled },
+    poses,
+    step() {
+      if (status !== 'running') return
+      stalled = program.step(elapsed).stalled
+      world.step()
+      elapsed += STEP
+      const current = poses()
+      if (current.every(part => leftEdge(part, part.x, part.angle) >= level.finish)) status = 'won'
+      if (current.some(part => part.y < -10) || elapsed >= 90) status = 'lost'
+    },
+    dispose() { world.free() }
+  }
+}
