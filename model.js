@@ -1,23 +1,45 @@
 export const bounds = { width: 9.6, height: 5.25, limit: 30 }
-export const actuatorColor = '#67dbc6'
+export const actuatorColor = '#ffdc57'
+export const maxMotorForce = 5000
 export const parts = {
   beam:   { width: 3, height: 0.55, color: '#ffb35e', shape: 'box' },
   block:  { width: 1, height: 1, color: '#ef8d4d', shape: 'box' },
   wedge:  { width: 1.5, height: 1, color: '#f4a354', shape: 'triangle' },
-  wheel:  { width: 1.4, height: 1.4, color: actuatorColor, shape: 'circle', joint: 'revolute' },
-  hinge:  { width: 0.7, height: 0.7, color: actuatorColor, shape: 'circle', joint: 'revolute' },
-  piston: { width: 1.1, height: 0.5, color: actuatorColor, shape: 'box', joint: 'prismatic' }
+  plate: { width: 2, height: 0.26, color: '#ffc180', shape: 'box' },
+  strut: { width: 0.36, height: 2.25, color: '#efa26c', shape: 'box' },
+  ball: { width: 0.9, height: 0.9, color: '#f7a973', shape: 'circle' },
+  wheel: { width: 1.4, height: 1.4, color: actuatorColor, shape: 'circle', joint: 'revolute', drive: true, defaultForce: 500 },
+  hinge: { width: 0.7, height: 0.7, color: actuatorColor, shape: 'circle', joint: 'revolute', defaultForce: 1000 },
+  piston: { width: 0.5, height: 0.24, color: actuatorColor, shape: 'capsule', joint: 'prismatic', limits: [-0.45, 1.5], defaultForce: 250 },
+  treadWheel: { width: 2.1, height: 2.1, color: actuatorColor, shape: 'circle', joint: 'revolute', drive: true,
+    friction: 1.9, maxSpeed: 22, defaultForce: 850 },
+  servo: { width: 0.78, height: 0.78, color: actuatorColor, shape: 'circle', joint: 'revolute',
+    limits: [-Math.PI / 3, Math.PI / 3], maxSpeed: 12, defaultForce: 650 },
+  ram: { width: 0.7, height: 0.3, color: actuatorColor, shape: 'capsule', joint: 'prismatic',
+    limits: [-0.35, 2.7], maxSpeed: 5, defaultForce: 550 }
 }
 
 export const levels = [
   { id: 'flat', finish: 30, points: [[-12, 0], [40, 0]], sky: '#172b3c', land: '#344e49' },
   { id: 'step', finish: 30, points: [[-12, 0], [14, 0], [14, 2.3], [40, 2.3]], sky: '#222c46', land: '#4b435a' },
-  { id: 'pit', finish: 36, points: [[-12, 0], [15, 0], [15, -2.6], [19.6, -2.6], [19.6, 0], [46, 0]], sky: '#342a42', land: '#675049' }
+  { id: 'pit', finish: 36, points: [[-12, 0], [15, 0], [15, -2.6], [19.6, -2.6], [19.6, 0], [46, 0]], sky: '#342a42', land: '#675049' },
+  { id: 'ridgeRun', finish: 42, points: [[-12, 0], [11, 0], [19, 2.1], [22, 2.1], [27, 0.8], [35, 2.4], [52, 2.4]],
+    sky: '#27334c', land: '#4e6159' },
+  { id: 'terraces', finish: 42, points: [[-12, 0], [12, 0], [12, 0.35], [17, 0.35], [17, 0.73], [22, 0.73],
+    [22, 1.51], [28, 1.51], [31, 0.4], [35, 0.4], [35, 0.85], [52, 0.85]], sky: '#3e3042', land: '#785951' },
+  { id: 'canal', finish: 49, points: [[-12, 0], [13, 0], [16, -1.25], [22, -1.25], [25, 0.6], [30, 0.6],
+    [33, -0.85], [39, -0.85], [42, 0.9], [59, 0.9]], sky: '#1e3b48', land: '#335953' }
 ]
 
 export const clamp = (value, min, max) => Math.min(max, Math.max(min, value))
 export const uid = () => crypto.randomUUID()
 export const isMotor = part => Boolean(parts[part.type]?.joint) && part.parent !== null
+export const isDriveWheel = part => Boolean(parts[part.type]?.drive)
+export const isRotaryMount = part => parts[part.type]?.joint === 'revolute' && !isDriveWheel(part)
+
+export function motorForce(part) {
+  return Number.isFinite(part.maxForce) ? clamp(part.maxForce, 0, maxMotorForce) : parts[part.type].defaultForce
+}
 
 export function blankMachine() {
   return { name: '', parts: [], nodes: [{ id: uid(), type: 'start', x: 35, y: 55 }], links: {} }
@@ -57,9 +79,9 @@ export function placePart(machine, type, x, y, selected) {
 }
 
 export function buildPosition(type, x, y, snap = false) {
-  const { width, height } = parts[type]
+  const { width, height, shape } = parts[type]
   const xLimit = (bounds.width - width) / 2
-  const yLimit = (bounds.height - height) / 2
+  const yLimit = (bounds.height - (shape === 'capsule' ? width : height)) / 2
   return {
     x: clamp(snap ? Math.round(x * 4) / 4 : x, -xLimit, xLimit),
     y: clamp(snap ? Math.round(y * 4) / 4 : y, -yLimit, yLimit)
@@ -96,9 +118,24 @@ export function localVertices(part) {
   return shape === 'triangle' ? [[-x, -y], [x, -y], [-x, y]] : [[-x, -y], [x, -y], [x, y], [-x, y]]
 }
 
+export function pistonAngle(part, parent) {
+  return parent ? Math.atan2(part.y - parent.y, part.x - parent.x) : 0
+}
+
+export function capsuleSize(part) {
+  const { width, height } = parts[part.type]
+  return { halfLength: (width - height) / 2, radius: height / 2 }
+}
+
+export function capsuleExtents(part, angle) {
+  const { halfLength, radius } = capsuleSize(part)
+  return { x: radius + halfLength * Math.abs(Math.cos(angle)), y: radius + halfLength * Math.abs(Math.sin(angle)) }
+}
+
 export function leftEdge(part, x, angle) {
   const shape = parts[part.type]
   if (shape.shape === 'circle') return x - shape.width / 2
+  if (shape.shape === 'capsule') return x - capsuleExtents(part, angle).x
   const cosine = Math.cos(angle)
   const sine = Math.sin(angle)
   return x + Math.min(...localVertices(part).map(([px, py]) => px * cosine - py * sine))
@@ -130,7 +167,7 @@ export function createProgram(machine, command) {
         waiting = false
         if (current.type === 'speed' || current.type === 'position') {
           for (const motor of motors) {
-            if (current.target === motor.id || (current.target === '*' && motor.type === 'wheel')) {
+            if (current.target === motor.id || (current.target === '*' && isDriveWheel(motor))) {
               command(motor, current.type, Number(current.value) || 0)
             }
           }

@@ -11,7 +11,7 @@
     "test": "node --test"
   },
   "dependencies": {
-    "@dimforge/rapier2d-compat": "0.19.3"
+    "@dimforge/rapier2d-compat": "0.20.0"
   },
   "devDependencies": {
     "vite": "^7.2.2"

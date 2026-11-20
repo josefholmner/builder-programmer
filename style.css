@@ -92,17 +92,21 @@ main { max-width: 1640px; margin: auto; padding: clamp(1.35rem, 3vw, 2.75rem) 4v
 .details p { color: var(--sub); font-size: .9rem; margin-top: .65rem; }
 .details hr { border: 0; border-top: 1px solid var(--edge); margin: 1.1rem 0; }
 .details .button { margin-top: .85rem; }
+.motor-force { display: grid; gap: .35rem; margin-top: .85rem; font-size: .9rem; color: var(--sub); }
+.motor-force input { width: 100%; }
 .part-list { margin-top: .65rem; display: grid; gap: .34rem; }
 .part-list button { text-align: left; background: #172335; border: 1px solid var(--edge); border-radius: 5px; padding: .42rem .55rem; }
 .part-list button[aria-pressed="true"] { border-color: var(--accent); }
 .footer { color: var(--sub); font: .75rem var(--mono); padding: 1rem 0; }
-.graph-scroll { min-height: 440px; height: 57vh; overflow: auto; background: #0e1521; }
-.graph-space {
-  position: relative; min-width: 100%; min-height: 100%; isolation: isolate;
-  background-image: radial-gradient(#35435b 1px, transparent 1px); background-size: 19px 19px;
+.graph-scroll {
+  position: relative; min-height: 440px; height: 57vh; overflow: clip; touch-action: none;
+  background: #0e1521 radial-gradient(#35435b 1px, transparent 1px) 0 0 / 19px 19px;
 }
-.wires { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.graph-scroll.panning, .graph-scroll.panning * { cursor: grabbing; user-select: none; }
+.graph-space { position: absolute; inset: 0; transform-origin: 0 0; isolation: isolate; }
+.wires { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
 .wires path { fill: none; stroke: #f7b56d; stroke-width: 2.5; }
+.wires .wire-preview { stroke: var(--cyan); stroke-dasharray: 5 4; }
 .node {
   position: absolute; width: 162px; background: #1a2638; border: 1px solid #44546b;
   border-radius: 8px; box-shadow: 0 8px 20px #05080daa; font-size: .84rem;
@@ -125,6 +129,7 @@ main { max-width: 1640px; margin: auto; padding: clamp(1.35rem, 3vw, 2.75rem) 4v
 .node-port.in { left: -8px; }
 .node-port.out { right: -8px; }
 .node-port[aria-pressed="true"], .node-port.connected { background: #f7b56d; }
+.node-port.drop-target { background: var(--cyan); border-color: var(--cyan); }
 input, select { background: #101824; border: 1px solid #425574; color: var(--text); border-radius: 5px; padding: .42rem .5rem; min-width: 0; }
 .track-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; }
 .track-card { display: flex; flex-direction: column; }

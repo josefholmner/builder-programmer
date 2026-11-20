@@ -1,4 +1,4 @@
-import { actuatorColor, bounds, isMotor, localVertices, parts, terrainY } from './model.js'
+import { actuatorColor, bounds, capsuleSize, isRotaryMount, localVertices, parts, pistonAngle, terrainY } from './model.js'
 
 const colors = new Map()
 function rgb(hex) {
@@ -59,32 +59,51 @@ function machineDrawing(draw, machine, project, scale, selected, ghost) {
     if (!parent) continue
     const a = project(parent.x, parent.y)
     const b = project(part.x, part.y)
-    draw.line(a, b, Math.max(2, scale * 0.18), '#293c51')
-    const moving = isMotor(part)
-    draw.line(a, b, Math.max(moving ? 2 : 1, scale * (moving ? 0.09 : 0.06)), moving ? actuatorColor : '#738ca5')
+    const mountWidth = isRotaryMount(part) ? 0.26 : 0.18
+    draw.line(a, b, Math.max(2, scale * mountWidth), '#343944')
+    const moving = parts[part.type].joint === 'prismatic'
+    draw.line(a, b, Math.max(moving ? 2 : 1, scale * (moving ? 0.09 : 0.06)), moving ? actuatorColor : '#8e949d')
   }
   for (const part of ghost ? [...machine, ghost] : machine) {
     const info = parts[part.type]
     const [x, y] = project(part.x, part.y)
-    const angle = part.angle ?? 0
+    const angle = part.angle ?? (info.shape === 'capsule' ? pistonAngle(part, all.get(part.parent)) : 0)
     const size = info.width * scale / 2
-    const accent = part === ghost ? (info.joint ? '#467f79' : '#798caa') : info.color
+    const accent = part === ghost ? (info.joint ? '#a88f42' : '#798caa') : info.color
     const outline = selected === part.id ? '#ffddaa' : '#101927'
     const point = (px, py) => [x + (px * Math.cos(angle) - py * Math.sin(angle)) * scale,
       y - (px * Math.sin(angle) + py * Math.cos(angle)) * scale]
-    if (info.shape === 'circle') {
+    if (info.shape === 'capsule') {
+      const { halfLength, radius } = capsuleSize(part)
+      const a = point(-halfLength, 0)
+      const b = point(halfLength, 0)
+      const pixels = radius * scale
+      draw.line(a, b, 2 * (pixels + 1.5), outline)
+      for (const end of [a, b]) draw.circle(...end, pixels + 1.5, outline)
+      draw.line(a, b, 2 * pixels, accent)
+      for (const end of [a, b]) draw.circle(...end, pixels, accent)
+      draw.line(point(-halfLength, radius * 0.42), point(halfLength, radius * 0.42), 1.5, '#fff2b3')
+    } else if (isRotaryMount(part)) {
       draw.circle(x, y, size + 2, outline)
-      draw.circle(x, y, size, part.type === 'wheel' ? '#293746' : accent)
-      draw.circle(x, y, size * 0.74, part.type === 'wheel' ? accent : '#223d48')
+      draw.circle(x, y, size, '#8e949d')
+      draw.circle(x, y, size * 0.74, accent)
+      draw.line([x, y], point(info.width * 0.27, 0), Math.max(2, size * 0.19), '#3c3428')
+      draw.circle(x, y, size * 0.18, '#3c3428')
+    } else if (info.drive) {
+      draw.circle(x, y, size + 2, outline)
+      draw.circle(x, y, size, '#293746')
+      draw.circle(x, y, size * 0.74, accent)
       for (let i = 0; i < 6; i++) {
         const spoke = i * Math.PI / 3
         draw.line([x, y], point(Math.cos(spoke) * info.width * 0.32, Math.sin(spoke) * info.width * 0.32), Math.max(2, size * 0.16), '#3e5369')
-        if (part.type === 'wheel') {
-          draw.line(point(Math.cos(spoke) * info.width * 0.43, Math.sin(spoke) * info.width * 0.43),
-            point(Math.cos(spoke) * info.width * 0.49, Math.sin(spoke) * info.width * 0.49), 2, '#667b8d')
-        }
+        draw.line(point(Math.cos(spoke) * info.width * 0.43, Math.sin(spoke) * info.width * 0.43),
+          point(Math.cos(spoke) * info.width * 0.49, Math.sin(spoke) * info.width * 0.49), 2, '#667b8d')
       }
       draw.circle(x, y, size * 0.23, '#e3ecf2')
+    } else if (info.shape === 'circle') {
+      draw.circle(x, y, size + 2, outline)
+      draw.circle(x, y, size, accent)
+      draw.line(point(-info.width * 0.29, 0), point(info.width * 0.29, 0), 2, '#ffe1ab')
     } else {
       const vertices = localVertices(part)
       draw.polygon(vertices.map(([px, py]) => point(px, py)), accent)
@@ -95,7 +114,7 @@ function machineDrawing(draw, machine, project, scale, selected, ghost) {
       if (info.shape === 'box') {
         const edge = info.width * 0.37
         draw.line(point(-edge, info.height * 0.25), point(edge, info.height * 0.25), 2,
-          info.joint ? '#c5f5e8' : '#ffe1ab')
+          info.joint ? '#fff2b3' : '#ffe1ab')
         for (const px of [-edge, edge]) {
           const [bx, by] = point(px, 0)
           draw.circle(bx, by, Math.max(2, scale * 0.045), '#5d4d4b')

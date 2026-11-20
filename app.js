@@ -1,5 +1,5 @@
 import './style.css'
-import { actuatorColor, bounds, buildPosition, clamp, fitsBuildArea, isMotor, leftEdge, levels, partName, parts, placePart, removePart, starterMachine, blankMachine, uid } from './model.js'
+import { actuatorColor, bounds, buildPosition, capsuleSize, clamp, fitsBuildArea, isDriveWheel, isMotor, leftEdge, levels, maxMotorForce, motorForce, partName, parts, pistonAngle, placePart, removePart, starterMachine, blankMachine, uid } from './model.js'
 import { translate } from './language.js'
 import { createSimulation, initializePhysics, STEP } from './physics.js'
 import { createRenderer, drawLevel, drawWorkshop, workshopView } from './render.js'
@@ -35,7 +35,11 @@ stage.innerHTML = '<canvas tabindex="0"></canvas><div class="stage-overlay"></di
 const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
 })[char])
-const symbols = { beam: '▬', block: '■', wedge: '◢', wheel: '◉', hinge: '⊙', piston: '↔' }
+const symbols = {
+  beam: '▬', block: '■', wedge: '◢', plate: '▱', strut: '▮', ball: '●',
+  wheel: '◉', hinge: '⊙', piston: '↔', treadWheel: '⦿', servo: '◔', ram: '⇆'
+}
+const partTypes = Object.keys(parts)
 const icon = value => '<span aria-hidden="true">' + value + '</span>'
 const button = (action, label, extra = '') => '<button type="button" data-action="' + action + '" ' + extra + '>' + label + '</button>'
 const actionButton = (action, key, variant = '', extra = '') =>
@@ -50,6 +54,10 @@ let redraw = true
 let ghost
 let drag
 let graphDrag
+let graphPan
+let graphWireDrag
+let suppressWireClick = false
+const graphView = { x: 0, y: 0, zoom: 1 }
 let toastTimer
 let lastSize = ''
 let runToken = 0
@@ -110,7 +118,7 @@ function render() {
     delete stage.querySelector('.stage-overlay').dataset.result
   }
   if (state.screen === 'garage' && state.tab === 'build') refreshBuild()
-  if (state.screen === 'garage' && state.tab === 'program') refreshGraph(false)
+  if (state.screen === 'garage' && state.tab === 'program') refreshGraph()
   if (state.screen === 'race') updateRace()
   redraw = true
 }
@@ -147,7 +155,8 @@ function refreshBuild() {
     types.map(type => button('place', '<span class="part-icon" aria-hidden="true" style="--tint:' + parts[type].color + '">' +
       symbols[type] + '</span><span><b>' + t(type) + '</b><small>' + t(type + 'Info') + '</small></span>',
     'class="part" data-type="' + type + '" aria-pressed="' + (state.placing === type) + '"')).join('') + '</div>'
-  palette.innerHTML = paletteGroup('shapes', ['beam', 'block', 'wedge']) + paletteGroup('actuators', ['wheel', 'hinge', 'piston'])
+  palette.innerHTML = paletteGroup('shapes', partTypes.filter(type => !parts[type].joint)) +
+    paletteGroup('actuators', partTypes.filter(type => parts[type].joint))
   const selected = state.machine.parts.find(part => part.id === state.selected)
   const parent = selected && state.machine.parts.find(part => part.id === selected.parent)
   const oversized = state.machine.parts.some(part => !fitsBuildArea(part))
@@ -155,7 +164,9 @@ function refreshBuild() {
     actionButton('fit-parts', 'fitParts', 'muted') + '<hr>' : ''
   app.querySelector('.inspector').innerHTML = fitPrompt + '<div class="eyebrow">' + t('frame') + '</div>' + (selected ?
     '<h3>' + labelPart(selected) + '</h3><p>' + (parent ? t('attachedTo') + ' · ' + labelPart(parent) : t('root')) +
-    '</p>' + actionButton('remove-part', 'remove', 'muted') : '<p>' + t('noSelection') + '</p>') +
+    '</p>' + (isMotor(selected) ? '<label class="motor-force">' + t(parts[selected.type].joint === 'prismatic' ? 'maxForce' : 'maxTorque') +
+      '<input type="number" min="0" max="' + maxMotorForce + '" step="any" data-motor-force value="' +
+      motorForce(selected) + '"></label>' : '') + actionButton('remove-part', 'remove', 'muted', 'aria-keyshortcuts="Delete"') : '<p>' + t('noSelection') + '</p>') +
     '<hr><div class="eyebrow">' + state.machine.parts.length + ' ' + t('partsUnit') +
     '</div><div class="part-list">' + state.machine.parts.map(part => button('select-part',
       '<span style="color:' + parts[part.type].color + '" aria-hidden="true">' + symbols[part.type] + '</span> ' + labelPart(part),
@@ -269,18 +280,16 @@ function nodeFields(node) {
     '" step="any" data-field="value" value="' + node.value + '"></label>'
   if (node.type === 'delay') return field(t('seconds'), 0, 60)
   const motors = state.machine.parts.filter(isMotor)
-  const options = [['', t('pickTarget')], ...(motors.some(part => part.type === 'wheel') ? [['*', t('wheelGroup')]] : []),
+  const options = [['', t('pickTarget')], ...(motors.some(isDriveWheel) ? [['*', t('wheelGroup')]] : []),
     ...motors.map(part => [part.id, labelPart(part)])]
   return '<label>' + t('targets') + '<select data-field="target">' + options.map(([id, name]) =>
     '<option value="' + id + '"' + (id === node.target ? ' selected' : '') + '>' + name + '</option>').join('') +
     '</select></label>' + field(t(node.type === 'speed' ? 'speedValue' : 'positionValue'), -360, 360)
 }
 
-function refreshGraph(restoreScroll = true) {
-  const scroll = app.querySelector('.graph-scroll')
-  const space = scroll.querySelector('.graph-space')
-  const x = restoreScroll ? scroll.scrollLeft : 0
-  const y = restoreScroll ? scroll.scrollTop : 0
+function refreshGraph() {
+  const viewport = app.querySelector('.graph-scroll')
+  const space = viewport.querySelector('.graph-space')
   space.innerHTML = '<svg class="wires" aria-hidden="true"></svg>' + state.machine.nodes.map(node => {
     const port = (direction, key, active, connected) => button('port-' + direction, '',
       'class="node-port ' + direction + (connected ? ' connected' : '') + '" title="' + t(key) + '" aria-label="' +
@@ -294,7 +303,14 @@ function refreshGraph(restoreScroll = true) {
   }).join('')
   for (const node of state.machine.nodes) positionNode(space.querySelector('[data-node="' + node.id + '"]'), node)
   drawWires(space)
-  scroll.scrollTo(x, y)
+  updateGraphView(viewport)
+}
+
+function updateGraphView(viewport) {
+  const { x, y, zoom } = graphView
+  viewport.firstElementChild.style.transform = 'translate(' + x + 'px,' + y + 'px) scale(' + zoom + ')'
+  viewport.style.backgroundPosition = x + 'px ' + y + 'px'
+  viewport.style.backgroundSize = (19 * zoom) + 'px ' + (19 * zoom) + 'px'
 }
 
 function positionNode(element, node) {
@@ -304,20 +320,18 @@ function positionNode(element, node) {
 
 function drawWires(space) {
   const nodes = new Map(state.machine.nodes.map(node => [node.id, node]))
-  space.style.width = Math.max(650, ...state.machine.nodes.map(node => node.x + 225)) + 'px'
-  space.style.height = Math.max(390, ...state.machine.nodes.map(node => node.y + 210)) + 'px'
   space.querySelector('.wires').innerHTML = Object.entries(state.machine.links).map(([source, target]) => {
     const a = nodes.get(source)
     const b = nodes.get(target)
     if (!a || !b) return ''
-    const x = a.x + 161
-    const y = a.y + 59
-    const endX = b.x
-    const endY = b.y + 59
-    const bend = Math.max(38, Math.abs(endX - x) * 0.48)
-    return '<path d="M ' + x + ' ' + y + ' C ' + (x + bend) + ' ' + y + ', ' + (endX - bend) +
-      ' ' + endY + ', ' + endX + ' ' + endY + '"></path>'
-  }).join('')
+    return '<path d="' + wirePath(a.x + 161, a.y + 59, b.x, b.y + 59) + '"></path>'
+  }).join('') + '<path class="wire-preview"></path>'
+}
+
+function wirePath(x, y, endX, endY) {
+  const bend = Math.max(38, Math.abs(endX - x) * 0.48)
+  return 'M ' + x + ' ' + y + ' C ' + (x + bend) + ' ' + y + ', ' + (endX - bend) +
+    ' ' + endY + ', ' + endX + ' ' + endY
 }
 
 function dialog(key, body) {
@@ -344,6 +358,7 @@ function library() {
 function replaceMachine(machine, example = false) {
   if (state.dirty && !window.confirm(t('replaceDraft'))) return false
   state.machine = structuredClone(machine)
+  Object.assign(graphView, { x: 0, y: 0, zoom: 1 })
   state.example = example
   state.dirty = false
   state.selected = null
@@ -412,11 +427,7 @@ const actions = {
     app.querySelector('[data-node="' + id + '"] .out').focus({ preventScroll: true })
   },
   'port-in': control => {
-    if (!state.wire) return
-    state.machine.links[state.wire] = control.closest('.node').dataset.node
-    state.wire = null
-    edited()
-    refreshGraph()
+    if (state.wire) connectNodes(state.wire, control.closest('.node').dataset.node)
   },
   unlink: control => unlink(control.closest('.node').dataset.node),
   'remove-node': control => {
@@ -431,6 +442,10 @@ const actions = {
 
 app.addEventListener('click', event => {
   const control = event.target.closest('[data-action]')
+  if (control?.dataset.action === 'port-out' && suppressWireClick && event.detail > 0) {
+    suppressWireClick = false
+    return
+  }
   if (control && !control.disabled) actions[control.dataset.action]?.(control)
 })
 
@@ -457,6 +472,22 @@ app.addEventListener('submit', event => {
   notify('saved')
 })
 
+function updateMotorForce(control, commit = false) {
+  const part = state.machine.parts.find(candidate => candidate.id === state.selected)
+  if (!part || !isMotor(part)) return
+  const input = control.valueAsNumber
+  if (!commit && !Number.isFinite(input)) return
+  const force = motorForce({ ...part, maxForce: input })
+  if (commit) control.value = force
+  if (force === motorForce(part)) return
+  part.maxForce = force
+  edited()
+}
+
+app.addEventListener('input', event => {
+  if (event.target.hasAttribute('data-motor-force')) updateMotorForce(event.target)
+})
+
 app.addEventListener('change', event => {
   const control = event.target
   if (control.id === 'language') {
@@ -465,15 +496,19 @@ app.addEventListener('change', event => {
     render()
     settings()
   } else if (control.id === 'node-type' && control.value) {
-    const scroll = app.querySelector('.graph-scroll')
+    const viewport = app.querySelector('.graph-scroll')
     const offset = state.machine.nodes.length * 29
+    const x = Math.min(28 + offset % 350, viewport.clientWidth * 0.65)
+    const y = Math.min(115 + offset % 170, viewport.clientHeight * 0.55)
     const node = { id: uid(), type: control.value, value: control.value === 'delay' ? 1 : 0,
-      target: state.machine.parts.find(isMotor)?.id ?? '', x: scroll.scrollLeft + 28 + offset % 350,
-      y: scroll.scrollTop + 115 + offset % 170 }
+      target: state.machine.parts.find(isMotor)?.id ?? '',
+      x: (x - graphView.x) / graphView.zoom, y: (y - graphView.y) / graphView.zoom }
     state.machine.nodes.push(node)
     control.value = ''
     edited()
     refreshGraph()
+  } else if (control.hasAttribute('data-motor-force')) {
+    updateMotorForce(control, true)
   } else if (control.dataset.field) {
     const node = state.machine.nodes.find(candidate => candidate.id === control.closest('.node').dataset.node)
     if (control.dataset.field === 'target') node.target = control.value
@@ -486,11 +521,48 @@ app.addEventListener('change', event => {
 })
 
 app.addEventListener('contextmenu', event => {
-  const control = event.target.closest('.node-port.out')
-  if (!control) return
-  event.preventDefault()
-  unlink(control.closest('.node').dataset.node)
+  if (event.target.closest('.graph-scroll')) event.preventDefault()
 })
+
+app.addEventListener('wheel', event => {
+  const viewport = event.target.closest('.graph-scroll')
+  if (!viewport) return
+  event.preventDefault()
+  if (graphPan || graphDrag || graphWireDrag) return
+  const rect = viewport.getBoundingClientRect()
+  const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? viewport.clientHeight : 1
+  const zoom = clamp(graphView.zoom * Math.exp(-event.deltaY * unit * 0.0015), 0.45, 2.5)
+  const ratio = zoom / graphView.zoom
+  const x = event.clientX - rect.left
+  const y = event.clientY - rect.top
+  graphView.x = x - (x - graphView.x) * ratio
+  graphView.y = y - (y - graphView.y) * ratio
+  graphView.zoom = zoom
+  updateGraphView(viewport)
+}, { passive: false })
+
+function connectNodes(source, target) {
+  state.machine.links[source] = target
+  state.wire = null
+  edited()
+  refreshGraph()
+}
+
+function wireDropTarget(viewport, event) {
+  const target = document.elementFromPoint(event.clientX, event.clientY)?.closest('.node-port.in')
+  return target && viewport.contains(target) ? target : null
+}
+
+function finishWireDrag(event) {
+  const { viewport, source, preview, target, moved } = graphWireDrag
+  graphWireDrag = null
+  target?.classList.remove('drop-target')
+  preview.removeAttribute('d')
+  if (!moved) return
+  suppressWireClick = true
+  const port = event?.type === 'pointerup' && wireDropTarget(viewport, event)
+  if (port) connectNodes(source.id, port.closest('.node').dataset.node)
+}
 
 function unlink(id) {
   delete state.machine.links[id]
@@ -500,23 +572,90 @@ function unlink(id) {
 }
 
 app.addEventListener('pointerdown', event => {
+  const viewport = event.target.closest('.graph-scroll')
+  suppressWireClick = false
+  if (!viewport || graphPan || graphDrag || graphWireDrag) return
+  const output = event.target.closest('.node-port.out')
+  if (output && event.button === 0) {
+    const id = output.closest('.node').dataset.node
+    graphWireDrag = {
+      source: state.machine.nodes.find(node => node.id === id), viewport,
+      x: event.clientX, y: event.clientY, pointer: event.pointerId,
+      preview: viewport.querySelector('.wire-preview'), target: null, moved: false
+    }
+    output.setPointerCapture(event.pointerId)
+    return
+  }
+  const rightClick = event.button === 2
+  const touchBackground = event.pointerType === 'touch' && !event.target.closest('.node')
+  if (rightClick || touchBackground) {
+    event.preventDefault()
+    const port = rightClick && event.target.closest('.node-port.out')
+    graphPan = {
+      viewport, pointer: event.pointerId, x: event.clientX, y: event.clientY,
+      originalX: graphView.x, originalY: graphView.y, moved: false,
+      output: port ? port.closest('.node').dataset.node : null
+    }
+    viewport.setPointerCapture(event.pointerId)
+    return
+  }
+
   const header = event.target.closest('.node-head')
   if (!header || event.target.closest('button') || event.button !== 0) return
   const element = header.closest('.node')
   const node = state.machine.nodes.find(candidate => candidate.id === element.dataset.node)
-  graphDrag = { element, node, x: event.clientX - node.x, y: event.clientY - node.y,
+  graphDrag = { element, node, x: event.clientX, y: event.clientY,
     originalX: node.x, originalY: node.y, pointer: event.pointerId }
   header.setPointerCapture(event.pointerId)
 })
+
 app.addEventListener('pointermove', event => {
+  if (graphWireDrag?.pointer === event.pointerId) {
+    const drag = graphWireDrag
+    if (!drag.moved && Math.hypot(event.clientX - drag.x, event.clientY - drag.y) < 4) return
+    drag.moved = true
+    drag.target?.classList.remove('drop-target')
+    drag.target = wireDropTarget(drag.viewport, event)
+    drag.target?.classList.add('drop-target')
+    const rect = drag.viewport.getBoundingClientRect()
+    const x = (event.clientX - rect.left - graphView.x) / graphView.zoom
+    const y = (event.clientY - rect.top - graphView.y) / graphView.zoom
+    drag.preview.setAttribute('d', wirePath(drag.source.x + 161, drag.source.y + 59, x, y))
+    return
+  }
+
+  if (graphPan?.pointer === event.pointerId) {
+    const { viewport, x, y, originalX, originalY } = graphPan
+    const dx = event.clientX - x
+    const dy = event.clientY - y
+    if (!graphPan.moved && Math.hypot(dx, dy) < 4) return
+    graphPan.moved = true
+    viewport.classList.add('panning')
+    graphView.x = originalX + dx
+    graphView.y = originalY + dy
+    updateGraphView(viewport)
+    return
+  }
+
   if (graphDrag?.pointer !== event.pointerId) return
-  const { node, element, x, y } = graphDrag
-  node.x = Math.max(15, event.clientX - x)
-  node.y = Math.max(15, event.clientY - y)
+  const { node, element, x, y, originalX, originalY } = graphDrag
+  node.x = originalX + (event.clientX - x) / graphView.zoom
+  node.y = originalY + (event.clientY - y) / graphView.zoom
   positionNode(element, node)
   drawWires(element.parentElement)
 })
-for (const type of ['pointerup', 'pointercancel']) app.addEventListener(type, event => {
+
+for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) app.addEventListener(type, event => {
+  if (graphWireDrag?.pointer === event.pointerId) {
+    finishWireDrag(event)
+    return
+  }
+  if (graphPan?.pointer === event.pointerId) {
+    const { viewport, moved, output } = graphPan
+    graphPan = null
+    viewport.classList.remove('panning')
+    if (event.type === 'pointerup' && !moved && output && state.machine.links[output]) unlink(output)
+  }
   if (graphDrag?.pointer !== event.pointerId) return
   const { node, originalX, originalY } = graphDrag
   graphDrag = null
@@ -539,6 +678,14 @@ function occupied(part, x, y) {
   const dx = x - part.x
   const dy = y - part.y
   if (shape.shape === 'circle') return Math.hypot(dx, dy) <= shape.width / 2
+  if (shape.shape === 'capsule') {
+    const parent = state.machine.parts.find(candidate => candidate.id === part.parent)
+    const angle = pistonAngle(part, parent)
+    const x = dx * Math.cos(angle) + dy * Math.sin(angle)
+    const y = dy * Math.cos(angle) - dx * Math.sin(angle)
+    const { halfLength, radius } = capsuleSize(part)
+    return Math.hypot(x - clamp(x, -halfLength, halfLength), y) <= radius
+  }
   return Math.abs(dx) <= shape.width / 2 && Math.abs(dy) <= shape.height / 2 &&
     (shape.shape !== 'triangle' || (dx / shape.width + 0.5) + (dy / shape.height + 0.5) <= 1)
 }
@@ -574,7 +721,7 @@ stage.addEventListener('pointermove', event => {
   } else if (state.placing) {
     ghost = null
     if (Math.abs(x) <= bounds.width / 2 && Math.abs(y) <= bounds.height / 2) {
-      ghost = { type: state.placing, id: 'ghost' }
+      ghost = { type: state.placing, id: 'ghost', parent: state.selected ?? state.machine.parts[0]?.id }
       movePart(ghost, x, y)
     }
     redraw = true
@@ -588,15 +735,23 @@ for (const type of ['pointerup', 'pointercancel']) stage.addEventListener(type, 
   if (part.x !== originalX || part.y !== originalY) edited()
 })
 
-app.addEventListener('keydown', event => {
+document.addEventListener('keydown', event => {
   if (event.key === 'Escape' && !app.querySelector('dialog').open) {
+    if (graphWireDrag) finishWireDrag()
     if (state.wire) { state.wire = null; refreshGraph() }
     if (state.placing) { state.placing = null; ghost = null; refreshBuild() }
   }
-  if (state.screen !== 'garage' || event.target.tagName !== 'CANVAS') return
+  if (state.screen !== 'garage' || state.tab !== 'build' || app.querySelector('dialog').open) return
   const selected = state.machine.parts.find(part => part.id === state.selected)
+  if (!selected) return
+  if (event.key === 'Delete' && !event.target.isContentEditable && !event.target.closest?.('input, textarea, select')) {
+    event.preventDefault()
+    actions['remove-part']()
+    return
+  }
+  if (event.target.tagName !== 'CANVAS') return
   const movement = { ArrowLeft: [-0.25, 0], ArrowRight: [0.25, 0], ArrowUp: [0, 0.25], ArrowDown: [0, -0.25] }[event.key]
-  if (!selected || !movement) return
+  if (!movement) return
   event.preventDefault()
   movePart(selected, selected.x + movement[0], selected.y + movement[1])
   edited()
