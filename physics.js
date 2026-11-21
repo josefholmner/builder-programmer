@@ -21,6 +21,7 @@ const positionDamping = 85
 const wheelSpeedDamping = 5
 const wheelRecoveryDamping = 60
 const wheelStallTicks = Math.round(0.15 / STEP)
+const wheelStartupStallTicks = Math.round(0.75 / STEP)
 const hingeSpeedDamping = 90
 const pistonSpeedDamping = 100
 
@@ -31,7 +32,13 @@ export function createSimulation(machine, level) {
   const ground = world.createRigidBody(RAPIER.RigidBodyDesc.fixed())
   const coordinates = new Float32Array(level.points.flat())
   const indices = new Uint32Array(level.points.slice(1).flatMap((_, index) => [index, index + 1]))
-  world.createCollider(RAPIER.ColliderDesc.polyline(coordinates, indices).setFriction(1.25).setCollisionGroups(groundGroups), ground)
+  const surfaces = [
+    RAPIER.ColliderDesc.polyline(coordinates, indices),
+    ...(level.obstacles ?? []).map(vertices => RAPIER.ColliderDesc.convexHull(new Float32Array(vertices.flat())))
+  ]
+  for (const surface of surfaces) {
+    world.createCollider(surface.setFriction(1.25).setCollisionGroups(groundGroups), ground)
+  }
 
   const bodies = new Map()
   const joints = new Map()
@@ -121,7 +128,7 @@ export function createSimulation(machine, level) {
     const drive = wheelSpeeds.get(id)
     if (!drive) return
     wheelSpeeds.delete(id)
-    if (drive.stallTicks === wheelStallTicks) {
+    if (drive.boosted) {
       drive.joint.configureMotorModel(RAPIER.MotorModel.AccelerationBased)
     }
   }
@@ -144,7 +151,7 @@ export function createSimulation(machine, level) {
         clearWheelSpeed(part.id)
         if (speed && motorForce(part) > 0) {
           wheelSpeeds.set(part.id, { speed, joint, wheel: bodies.get(part.id), mount: bodies.get(part.parent),
-            moving: false, stallTicks: 0 })
+            moving: false, stallTicks: 0, boosted: false })
         }
       }
       // Replacing a position command must release its spring.
@@ -175,12 +182,15 @@ export function createSimulation(machine, level) {
       if (status !== 'running') return
       stalled = program.step(elapsed).stalled
       for (const drive of wheelSpeeds.values()) {
-        if (drive.stallTicks === wheelStallTicks) continue
-        // Recover a wheel that was turning and has since stalled under load.
+        if (drive.boosted) continue
         const fraction = (drive.wheel.angvel() - drive.mount.angvel()) / drive.speed
         drive.moving ||= fraction >= 0.5
-        drive.stallTicks = drive.moving && fraction < 0.16 ? drive.stallTicks + 1 : 0
-        if (drive.stallTicks === wheelStallTicks) {
+        // Give wheels time to accelerate, then recover even if they never got up to speed.
+        const threshold = drive.moving ? 0.16 : 0.28
+        const stallTicks = drive.moving ? wheelStallTicks : wheelStartupStallTicks
+        drive.stallTicks = fraction < threshold ? drive.stallTicks + 1 : 0
+        if (drive.stallTicks >= stallTicks) {
+          drive.boosted = true
           // Use torque-based feedback so a light mount doesn't limit stall recovery.
           drive.joint.configureMotorModel(RAPIER.MotorModel.ForceBased)
           drive.joint.configureMotor(0, drive.speed, 0, wheelRecoveryDamping)

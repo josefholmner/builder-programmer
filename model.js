@@ -10,26 +10,30 @@ export const parts = {
   ball: { width: 0.9, height: 0.9, color: '#ffbb82', shape: 'circle' },
   blob: { width: 0.9, height: 0.9, color: '#f477b5', shape: 'circle', friction: 3.8, grip: true },
   wheel: { width: 1.32, height: 1.32, color: actuatorColor, shape: 'circle', joint: 'revolute', drive: true, defaultForce: 500 },
-  hinge: { width: 0.7, height: 0.7, color: actuatorColor, shape: 'circle', joint: 'revolute', defaultForce: 1000 },
+  hinge: { width: 0.7, height: 0.7, color: '#ff9b52', previewColor: '#a96538', shape: 'circle',
+    joint: 'revolute', defaultForce: 1000 },
   piston: { width: 0.5, height: 0.24, color: actuatorColor, shape: 'capsule', joint: 'prismatic', limits: [-0.45, 1.5], defaultForce: 250 },
   treadWheel: { width: 2.1, height: 2.1, color: actuatorColor, shape: 'circle', joint: 'revolute', drive: true,
     friction: 1.9, maxSpeed: 22, defaultForce: 850, legacy: true },
-  servo: { width: 0.78, height: 0.78, color: actuatorColor, shape: 'circle', joint: 'revolute',
+  servo: { width: 0.78, height: 0.78, color: '#5ee1d6', previewColor: '#367d7b', shape: 'circle', joint: 'revolute',
     limits: [-Math.PI / 3, Math.PI / 3], maxSpeed: 12, defaultForce: 650 },
   ram: { width: 0.7, height: 0.3, color: actuatorColor, shape: 'capsule', joint: 'prismatic',
-    limits: [-0.35, 2.7], maxSpeed: 5, defaultForce: 550 }
+    limits: [-0.35, 2.7], maxSpeed: 5, defaultForce: 550, legacy: true }
 }
 
 export const levels = [
   { id: 'flat', finish: 30, points: [[-12, 0], [40, 0]], sky: '#a5e4ff', hills: ['#cbeed3', '#a7dcb6'], land: '#81be82', verge: '#e9fa9a' },
   { id: 'step', finish: 30, points: [[-12, 0], [14, 0], [14, 2.3], [40, 2.3]], sky: '#bfcfff', hills: ['#ded6fa', '#c8b5eb'], land: '#b28bc5', verge: '#ffe3b2' },
   { id: 'pit', finish: 36, points: [[-12, 0], [15, 0], [15, -2.6], [19.6, -2.6], [19.6, 0], [46, 0]], sky: '#ffd7bc', hills: ['#ffeab7', '#f6b896'], land: '#d29576', verge: '#fff1ae' },
-  { id: 'ridgeRun', finish: 42, points: [[-12, 0], [11, 0], [19, 2.1], [22, 2.1], [27, 0.8], [35, 2.4], [52, 2.4]],
-    sky: '#b3dcff', hills: ['#cce8ef', '#a4cfcf'], land: '#72ad9d', verge: '#e4f7b0' },
-  { id: 'terraces', finish: 42, points: [[-12, 0], [12, 0], [12, 0.35], [17, 0.35], [17, 0.73], [22, 0.73],
-    [22, 1.51], [28, 1.51], [31, 0.4], [35, 0.4], [35, 0.85], [52, 0.85]], sky: '#fbd4ea', hills: ['#fce6d6', '#ecbedb'], land: '#ce92b1', verge: '#fff0bb' },
-  { id: 'canal', finish: 49, points: [[-12, 0], [13, 0], [16, -1.25], [22, -1.25], [25, 0.6], [30, 0.6],
-    [33, -0.85], [39, -0.85], [42, 0.9], [59, 0.9]], sky: '#9de9e6', hills: ['#caefda', '#9edcbf'], land: '#6cbba8', verge: '#e3faac' }
+  { id: 'ridgeRun', finish: 42, points: [[-12, 0], [10, 0], [16, 1.2], [16, 3], [23, 3], [29, 0.6],
+    [32, 0.6], [32, 2.75], [52, 2.75]], sky: '#b3dcff', hills: ['#cce8ef', '#a4cfcf'], land: '#72ad9d', verge: '#e4f7b0' },
+  { id: 'terraces', finish: 42, points: [[-12, 0], [12, 0], [12, 1.65], [18, 1.65], [18, 4.45], [24, 4.45],
+    [24, 2.1], [33, 2.1], [33, 4.65], [52, 4.65]],
+    obstacles: [[[27, 3.9], [30.8, 3.9], [31.6, 4.7], [31.1, 5.9], [27.5, 5.9], [26.4, 5]]],
+    sky: '#fbd4ea', hills: ['#fce6d6', '#ecbedb'], land: '#ce92b1', verge: '#fff0bb' },
+  { id: 'canal', finish: 49, points: [[-12, 0], [14, 0], [14, -3.5], [19, -3.5], [22, -1.6], [22, 0.75],
+    [30, 0.75], [30, -4.5], [36, -4.5], [40, -1.4], [40, 1.35], [59, 1.35]],
+    sky: '#9de9e6', hills: ['#caefda', '#9edcbf'], land: '#6cbba8', verge: '#e3faac' }
 ]
 
 export const clamp = (value, min, max) => Math.min(max, Math.max(min, value))

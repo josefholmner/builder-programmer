@@ -10,6 +10,7 @@ test('construction keeps full parts inside the bounds and clears removed actuato
   assert.equal(placePart(machine, 'wheel', 0, 0, null), undefined)
   const base = placePart(machine, 'beam', 50, -50, null)
   assert.equal(placePart(machine, 'treadWheel', 0, 0, base.id), undefined)
+  assert.equal(placePart(machine, 'ram', 0, 0, base.id), undefined)
   assert.equal(base.x + 1.5, bounds.width / 2)
   assert.equal(base.y - 0.275, -bounds.height / 2)
   assert.ok(fitsBuildArea(base))
@@ -159,6 +160,56 @@ test('all four wheel speed commands keep driving after the chassis reaches the s
   }
 })
 
+function wheelTurns(simulation, start, end) {
+  while (simulation.elapsed < start && simulation.status === 'running') simulation.step()
+  let before = new Map(simulation.poses().map(part => [part.id, part]))
+  const turns = new Map([...before.values()].filter(part => part.type === 'wheel').map(part => [part.id, 0]))
+  while (simulation.elapsed < end && simulation.status === 'running') {
+    simulation.step()
+    const after = new Map(simulation.poses().map(part => [part.id, part]))
+    for (const [id, cumulative] of turns) {
+      const part = after.get(id)
+      const angle = (part.angle - after.get(part.parent).angle) -
+        (before.get(id).angle - before.get(part.parent).angle)
+      turns.set(id, cumulative + Math.atan2(Math.sin(angle), Math.cos(angle)))
+    }
+    before = after
+  }
+  return turns
+}
+
+test('wheels recover even when launching under load keeps them from reaching speed', async () => {
+  await initializePhysics()
+  const machine = blankMachine()
+  const wheelY = -(bounds.height - parts.wheel.height) / 2
+  machine.parts = [
+    { id: 'base', type: 'ball', parent: null, x: 0, y: 1.5 },
+    { id: 'rear', type: 'ball', parent: 'base', x: -4.25, y: 1.5 },
+    { id: 'front', type: 'ball', parent: 'rear', x: 4.25, y: 1.5 },
+    { id: 'rear-wheel', type: 'wheel', parent: 'rear', x: -4.14, y: wheelY, maxForce: 2000 },
+    { id: 'front-wheel', type: 'wheel', parent: 'front', x: 4.14, y: wheelY, maxForce: 2000 },
+    { id: 'front-piston', type: 'piston', parent: 'front', x: 2.75, y: -1.75 },
+    { id: 'front-inner-wheel', type: 'wheel', parent: 'front-piston', x: 2.5, y: wheelY, maxForce: 2000 },
+    { id: 'rear-piston', type: 'piston', parent: 'rear', x: -3, y: -1.5 },
+    { id: 'rear-inner-wheel', type: 'wheel', parent: 'rear-piston', x: -2.75, y: wheelY, maxForce: 2000 }
+  ]
+  const start = machine.nodes[0].id
+  machine.nodes.push(
+    { id: 'drive', type: 'speed', value: 5, target: '*' },
+    { id: 'extend', type: 'speed', value: 5, target: 'front-piston' }
+  )
+  machine.links = { [start]: 'drive', drive: 'extend' }
+
+  const simulation = createSimulation(machine, levels[1])
+  try {
+    for (const [id, angle] of wheelTurns(simulation, 4, 5)) {
+      assert.ok(angle < -2, id + ' failed to recover from a slow launch')
+    }
+  } finally {
+    simulation.dispose()
+  }
+})
+
 test('piston-mounted driven wheels recover under load on the step', async () => {
   await initializePhysics()
   const machine = blankMachine()
@@ -187,22 +238,10 @@ test('piston-mounted driven wheels recover under load on the step', async () => 
 
   const level = levels.find(level => level.id === 'step')
   const simulation = createSimulation(machine, level)
-  const turns = new Map(machine.parts.filter(part => part.type === 'wheel').map(part => [part.id, 0]))
   try {
-    while (simulation.elapsed < 4 && simulation.status === 'running') simulation.step()
-    let before = new Map(simulation.poses().map(part => [part.id, part]))
-    while (simulation.elapsed < 6 && simulation.status === 'running') {
-      simulation.step()
-      const after = new Map(simulation.poses().map(part => [part.id, part]))
-      for (const [id, cumulative] of turns) {
-        const part = after.get(id)
-        const angle = (part.angle - after.get(part.parent).angle) -
-          (before.get(id).angle - before.get(part.parent).angle)
-        turns.set(id, cumulative + Math.atan2(Math.sin(angle), Math.cos(angle)))
-      }
-      before = after
+    for (const [id, angle] of wheelTurns(simulation, 4, 6)) {
+      assert.ok(angle < -9, id + ' stopped turning under load')
     }
-    for (const [id, angle] of turns) assert.ok(angle < -9, id + ' stopped turning under load')
     while (simulation.elapsed < 20 && simulation.status === 'running') simulation.step()
     assert.equal(simulation.status, 'won')
   } finally {
@@ -329,31 +368,29 @@ for (const design of obstacleDesigns) {
   })
 }
 
-test('the newer courses can be finished using parts in the current parts bin', async () => {
+test('the three later courses block the starter rover', async () => {
   await initializePhysics()
   for (const level of levels.slice(3)) {
-    const machine = starterMachine()
-    if (level.id === 'terraces') {
-      machine.parts.pop()
-      const [chassis, rear, front] = machine.parts
-      chassis.y = 0.75
-      rear.x = -2.25
-      front.x = 1.25
-      machine.nodes.at(-1).value = 15
-      const servo = placePart(machine, 'servo', 1.5, 1, chassis.id)
-      placePart(machine, 'blob', 2.75, 1.75, servo.id)
-      let previous = 'drive'
-      for (const [type, value] of [['delay', 3.44], ['position', -60], ['delay', 0.76], ['position', 0]]) {
-        const id = 'terraces-' + machine.nodes.length
-        machine.nodes.push({ id, type, value, target: servo.id })
-        machine.links[previous] = id
-        previous = id
-      }
-    }
-    const simulation = createSimulation(machine, level)
+    const simulation = createSimulation(starterMachine(), level)
     try {
-      while (simulation.status === 'running' && simulation.elapsed < 20) simulation.step()
-      assert.equal(simulation.status, 'won', level.id)
+      while (simulation.status === 'running') simulation.step()
+      assert.equal(simulation.status, 'lost', level.id)
+    } finally {
+      simulation.dispose()
+    }
+  }
+})
+
+test('an overhead obstacle blocks tall machines and leaves clearance for short ones', async () => {
+  await initializePhysics()
+  const level = { ...levels[0], obstacles: [[[10, 2], [14, 2], [14, 4], [10, 4]]] }
+  for (const tall of [true, false]) {
+    const rover = starterMachine()
+    if (!tall) rover.parts.pop()
+    const simulation = createSimulation(rover, level)
+    try {
+      while (simulation.status === 'running' && simulation.elapsed < 15) simulation.step()
+      assert.equal(simulation.status === 'won', !tall)
     } finally {
       simulation.dispose()
     }
@@ -383,7 +420,8 @@ test('the blob resists slipping and releases when lifted from the ground', async
   const frame = placePart(machine, 'beam', 0, 1.5, null)
   placePart(machine, 'strut', -1, 0.5, frame.id)
   placePart(machine, 'strut', 1, 0.5, frame.id)
-  const ram = placePart(machine, 'ram', 0, 0.25, frame.id)
+  const ram = { id: 'legacy-ram', type: 'ram', parent: frame.id, x: 0, y: 0.25 }
+  machine.parts.push(ram)
   const blob = placePart(machine, 'blob', 0, -0.25, ram.id)
   machine.nodes.push(
     { id: 'settle', type: 'delay', value: 1 },
@@ -407,10 +445,11 @@ test('the servo and long-stroke ram stop at their travel limits', async () => {
   for (const [type, target] of [['servo', 160], ['ram', 3]]) {
     const machine = blankMachine()
     const base = placePart(machine, 'beam', 0, 0, null)
-    const motor = placePart(machine, type, 0, 1.5, base.id)
-    machine.nodes.push({ id: 'move', type: 'position', target: motor.id, value: target })
+    const motor = { id: type, type, parent: base.id, x: 0, y: 1.5 }
+    machine.parts.push(motor)
+    machine.nodes.push({ id: 'move', type: 'position', target: motor.id, value: target, x: 245, y: 55 })
     machine.links[machine.nodes[0].id] = 'move'
-    const simulation = createSimulation(machine, levels[0])
+    const simulation = createSimulation(decodeMachineFile(encodeMachineFile(machine)), levels[0])
     try {
       while (simulation.elapsed < 3) simulation.step()
       const [parent, part] = simulation.poses()

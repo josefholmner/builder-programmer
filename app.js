@@ -40,7 +40,7 @@ const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({
 })[char])
 const symbols = {
   beam: '▬', block: '■', wedge: '◢', plate: '▱', strut: '▮', ball: '●', blob: '●',
-  wheel: '◉', hinge: '⊙', piston: '↔', treadWheel: '⦿', servo: '◔', ram: '⇆'
+  wheel: '◉', hinge: '⊙', piston: '↔', treadWheel: '⦿', servo: '▣', ram: '⇆'
 }
 const partTypes = Object.keys(parts).filter(type => !parts[type].legacy)
 const icon = value => '<span aria-hidden="true">' + value + '</span>'
@@ -197,9 +197,15 @@ function levelsMarkup() {
       const best = bestTime(level.id)
       const start = level.points[0][0]
       const length = level.points.at(-1)[0] - start
-      const terrain = level.points.map(([x, y]) => ((x - start) / length * 100) + '% ' + (63 - y * 11) + '%').join(',')
+      const obstacles = level.obstacles ?? []
+      const elevations = [...level.points, ...obstacles.flat()].map(([, y]) => y)
+      const scale = Math.min(11, 31 / Math.max(1, -Math.min(...elevations)), 54 / Math.max(1, ...elevations))
+      const outline = points => points.map(([x, y]) => ((x - start) / length * 100) + '% ' + (63 - y * scale) + '%').join(',')
+      const terrain = outline(level.points)
+      const obstruction = obstacles.map(points =>
+        '<div class="track-obstacle" aria-hidden="true" style="clip-path:polygon(' + outline(points) + ')"></div>').join('')
       return '<article class="panel track-card"><div class="track-art" style="--sky:' + level.sky + ';--land:' + level.land +
-        ';--terrain:' + terrain + ',100% 100%,0% 100%"><span class="mono">' + t('track') + ' ' +
+        ';--terrain:' + terrain + ',100% 100%,0% 100%">' + obstruction + '<span class="mono">' + t('track') + ' ' +
         String(index + 1).padStart(2, '0') + '</span></div><div class="panel-body"><span class="eyebrow">' +
         (best !== null ? t('complete') : t(available ? 'available' : 'locked')) +
         '</span><h2>' + t(level.id) + '</h2><p>' + t(level.id + 'Info') + '</p>' +

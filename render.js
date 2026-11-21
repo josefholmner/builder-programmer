@@ -69,7 +69,8 @@ function machineDrawing(draw, machine, project, scale, selected, ghost) {
     const [x, y] = project(part.x, part.y)
     const angle = part.angle ?? (info.shape === 'capsule' ? pistonAngle(part, all.get(part.parent)) : buildAngle(part))
     const size = info.width * scale / 2
-    const accent = part === ghost ? (info.joint ? '#a88f42' : part.type === 'blob' ? '#a95c89' : '#8994c2') : info.color
+    const preview = info.previewColor ?? (info.joint ? '#a88f42' : part.type === 'blob' ? '#a95c89' : '#8994c2')
+    const accent = part === ghost ? preview : info.color
     const outline = selected === part.id ? '#ffddaa' : '#101927'
     const point = (px, py) => [x + (px * Math.cos(angle) - py * Math.sin(angle)) * scale,
       y - (px * Math.sin(angle) + py * Math.cos(angle)) * scale]
@@ -86,9 +87,16 @@ function machineDrawing(draw, machine, project, scale, selected, ghost) {
     } else if (isRotaryMount(part)) {
       draw.circle(x, y, size + 2, outline)
       draw.circle(x, y, size, '#8e949d')
-      draw.circle(x, y, size * 0.74, accent)
-      draw.line([x, y], point(info.width * 0.27, 0), Math.max(2, size * 0.19), '#3c3428')
-      draw.circle(x, y, size * 0.18, '#3c3428')
+      if (part.type === 'servo') {
+        const edge = info.width * 0.3
+        draw.polygon([point(-edge, -edge), point(edge, -edge), point(edge, edge), point(-edge, edge)], accent)
+        draw.line(point(0, -edge * 0.6), point(0, edge * 0.6), Math.max(2, size * 0.13), '#173e48')
+        draw.line([x, y], point(edge * 0.82, 0), Math.max(2, size * 0.16), '#173e48')
+      } else {
+        draw.circle(x, y, size * 0.74, accent)
+        draw.line([x, y], point(info.width * 0.27, 0), Math.max(2, size * 0.19), '#3c3428')
+        draw.circle(x, y, size * 0.18, '#3c3428')
+      }
     } else if (info.drive) {
       draw.circle(x, y, size + 2, outline)
       draw.circle(x, y, size, '#293746')
@@ -204,6 +212,12 @@ export function drawLevel(draw, level, poses, camera) {
       draw.rect(previous[0], previous[1], next[0] - previous[0], Math.max(6, scale * 0.22), '#cd976d')
     }
     draw.line(previous, next, 4, pitFloor ? '#ffe3b0' : level.verge)
+  }
+  for (const obstacle of level.obstacles ?? []) {
+    const face = obstacle.map(([x, y]) => project(x, y))
+    draw.polygon(face, '#67507d')
+    face.forEach((point, index) => draw.line(point, face[(index + 1) % face.length], 3, '#473351'))
+    draw.line(face[0], face[1], 3, '#ffce7d')
   }
   const left = camera.x - width / scale
   const right = camera.x + width / scale

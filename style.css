@@ -158,6 +158,7 @@ input, select { background: #101824; border: 1px solid #425574; color: var(--tex
 .track-art { position: relative; background: var(--sky); height: 145px; overflow: hidden; }
 .track-art::before { content: ""; position: absolute; width: 69px; height: 69px; background: #ffdb7d; border-radius: 50%; left: 64%; top: 25px; box-shadow: 0 0 0 6px #fff3c699; }
 .track-art::after { content: ""; position: absolute; inset: 0; background: var(--land); clip-path: polygon(var(--terrain)); }
+.track-obstacle { position: absolute; inset: 0; background: #67507d; }
 .track-art span { position: absolute; top: .7rem; left: .85rem; z-index: 1; background: #30294d; color: #fff5f3; border: 1px solid #71628c; border-radius: 5px; padding: .3rem .45rem; }
 .race .viewport { height: clamp(420px, 65vh, 760px); }
 progress { width: min(30vw, 270px); height: .75rem; accent-color: var(--accent); }
